@@ -24,6 +24,7 @@ class GLUETransformer(pl.LightningModule):
         self,
         model_name_or_path: str,
         num_labels: int,
+        finetuning_task: str,
         learning_rate: float = 2e-5,
         adam_epsilon: float = 1e-8,
         warmup_steps: int = 0,
@@ -37,8 +38,13 @@ class GLUETransformer(pl.LightningModule):
         # save the hyperparameters. Access by self.hparams.[variable name]
         self.save_hyperparameters()
 
-        self.config = AutoConfig.from_pretrained(model_name_or_path, num_labels=num_labels)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_name_or_path, config=self.config)
+        self.config = AutoConfig.from_pretrained(
+            model_name_or_path,
+            num_labels=num_labels,
+            finetuning_task=finetuning_task)
+        self.model = AutoModelForSequenceClassification.from_pretrained(
+            model_name_or_path,
+            config=self.config)
         self.metric = datasets.load_metric(
             'glue',
             self.hparams.task_name,
@@ -58,7 +64,7 @@ class GLUETransformer(pl.LightningModule):
         outputs = self(**batch)
         val_loss, logits = outputs[:2]
 
-        if self.hparams.num_labels >= 1:
+        if self.hparams.num_labels > 1:
             preds = torch.argmax(logits, dim=1)
         elif self.hparams.num_labels == 1:
             preds = logits.squeeze()
@@ -78,12 +84,16 @@ class GLUETransformer(pl.LightningModule):
                 self.log(f'val_loss_{split}', loss, prog_bar=True)
                 split_metrics = {f"{k}_{split}": v for k, v in self.metric.compute(predictions=preds, references=labels).items()}
                 self.log_dict(split_metrics, prog_bar=True)
+            return loss
 
         preds = torch.cat([x['preds'] for x in outputs]).detach().cpu().numpy()
         labels = torch.cat([x['labels'] for x in outputs]).detach().cpu().numpy()
         loss = torch.stack([x['loss'] for x in outputs]).mean()
         self.log('val_loss', loss, prog_bar=True)
-        self.log_dict(self.metric.compute(predictions=preds, references=labels), prog_bar=True)
+        result = self.metric.compute(predictions=preds, references=labels)
+        self.log_dict(result, prog_bar=True)
+
+        return loss
 
     def setup(self, stage):
         if stage == 'fit':
@@ -178,10 +188,11 @@ def main():
     model = GLUETransformer(
         num_labels=data_module.num_labels,
         eval_splits=data_module.eval_splits,
+        finetuning_task=data_module.task_name,
         **vars(args))
 
     # training
-    trainer = pl.Trainer.from_argparse_args(args)  # , fast_dev_run=True)
+    trainer = pl.Trainer.from_argparse_args(args, fast_dev_run=True)
     trainer.fit(model, data_module)
 
 
